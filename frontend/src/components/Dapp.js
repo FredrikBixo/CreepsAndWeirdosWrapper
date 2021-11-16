@@ -5,8 +5,13 @@ import { ethers } from "ethers";
 
 // We import the contract's artifacts and address here, as we are going to be
 // using them with ethers
-import TokenArtifact from "../contracts/Token.json";
-import contractAddress from "../contracts/contract-address.json";
+import DadaCollectibleArtifact from "../contracts/DadaCollectible.json";
+import dadaCollectibleAddress from "../contracts/contract-address.json";
+import drawingnames from "../drawingnames.json"
+
+import WrapperArtifact from "../contracts/DadaCollectibleWrapper.json";
+import wrapperContractAddress from "../contracts/wrapper-contract-address.json";
+import { ApolloClient, InMemoryCache, gql } from '@apollo/client';
 
 // All the logic of this dapp is contained in the Dapp component.
 // These other components are just presentational ones: they don't have any
@@ -14,18 +19,24 @@ import contractAddress from "../contracts/contract-address.json";
 import { NoWalletDetected } from "./NoWalletDetected";
 import { ConnectWallet } from "./ConnectWallet";
 import { Loading } from "./Loading";
-import { Transfer } from "./Transfer";
+import { Wrapper } from "./Wrapper";
 import { TransactionErrorMessage } from "./TransactionErrorMessage";
 import { WaitingForTransactionMessage } from "./WaitingForTransactionMessage";
 import { NoTokensMessage } from "./NoTokensMessage";
 
+import Dropdown from 'react-dropdown';
+import 'react-dropdown/style.css';
+
 // This is the Hardhat Network id, you might change it in the hardhat.config.js
 // Here's a list of network ids https://docs.metamask.io/guide/ethereum-provider.html#properties
 // to use when deploying to other networks.
-const HARDHAT_NETWORK_ID = '31337';
+const HARDHAT_NETWORK_ID = '1';
 
 // This is an error code that indicates that the user canceled a transaction
 const ERROR_CODE_TX_REJECTED_BY_USER = 4001;
+
+var wrappingContract;
+
 
 // This component is in charge of doing these things:
 //   1. It connects to the user's wallet
@@ -38,6 +49,8 @@ const ERROR_CODE_TX_REJECTED_BY_USER = 4001;
 // you how to keep your Dapp and contract's state in sync,  and how to send a
 // transaction.
 export class Dapp extends React.Component {
+
+
   constructor(props) {
     super(props);
 
@@ -53,6 +66,11 @@ export class Dapp extends React.Component {
       txBeingSent: undefined,
       transactionError: undefined,
       networkError: undefined,
+      wrappingPreprationDone: false,
+      ownedERC20Drawings:[],
+      dropDownText:[],
+      ownedERC721Drawings:[],
+      dropDownTextERC721:[],
     };
 
     this.state = this.initialState;
@@ -74,8 +92,8 @@ export class Dapp extends React.Component {
     // clicks a button. This callback just calls the _connectWallet method.
     if (!this.state.selectedAddress) {
       return (
-        <ConnectWallet 
-          connectWallet={() => this._connectWallet()} 
+        <ConnectWallet
+          connectWallet={() => this._connectWallet()}
           networkError={this.state.networkError}
           dismiss={() => this._dismissNetworkError()}
         />
@@ -94,15 +112,8 @@ export class Dapp extends React.Component {
         <div className="row">
           <div className="col-12">
             <h1>
-              {this.state.tokenData.name} ({this.state.tokenData.symbol})
+              Creeps and Weirdos Unofficial Wrapper
             </h1>
-            <p>
-              Welcome <b>{this.state.selectedAddress}</b>, you have{" "}
-              <b>
-                {this.state.balance.toString()} {this.state.tokenData.symbol}
-              </b>
-              .
-            </p>
           </div>
         </div>
 
@@ -110,7 +121,7 @@ export class Dapp extends React.Component {
 
         <div className="row">
           <div className="col-12">
-            {/* 
+            {/*
               Sending a transaction isn't an immidiate action. You have to wait
               for it to be mined.
               If we are waiting for one, we show a message here.
@@ -119,8 +130,8 @@ export class Dapp extends React.Component {
               <WaitingForTransactionMessage txHash={this.state.txBeingSent} />
             )}
 
-            {/* 
-              Sending a transaction can fail in multiple ways. 
+            {/*
+              Sending a transaction can fail in multiple ways.
               If that happened, we show a message here.
             */}
             {this.state.transactionError && (
@@ -137,26 +148,50 @@ export class Dapp extends React.Component {
             {/*
               If the user has no tokens, we don't show the Tranfer form
             */}
-            {this.state.balance.eq(0) && (
-              <NoTokensMessage selectedAddress={this.state.selectedAddress} />
-            )}
 
             {/*
-              This component displays a form that the user can use to send a 
+              This component displays a form that the user can use to send a
               transaction and transfer some tokens.
               The component doesn't have logic, it just calls the transferTokens
               callback.
             */}
-            {this.state.balance.gt(0) && (
-              <Transfer
-                transferTokens={(to, amount) =>
-                  this._transferTokens(to, amount)
-                }
-                tokenSymbol={this.state.tokenData.symbol}
+            {(
+              <Wrapper
+                wrap={(item) =>
+                  {
+                    let drawingId = this.state.ownedERC20Drawings[item].drawingID;
+                    let printId = this.state.ownedERC20Drawings[item].printIndex;
+                    if (!this.state.wrappingPreprationDone) {
+                    this._prepareToWrap(drawingId, printId);
+                  } else {
+                    this._wrap(drawingId, printId);
+                  }
+                }}
+                unwrap = {(item) =>
+                  {
+                    let drawingId = this.state.ownedERC721Drawings[item].drawingID;
+                    let printId = this.state.ownedERC721Drawings[item].printIndex;
+                    this._unwrap(drawingId,printId)
+                  }}
+                wrappingPreprationDone={this.state.wrappingPreprationDone}
+                dropDownText={this.state.dropDownText}
+                dropDownTextERC721 = {this.state.dropDownTextERC721}
               />
             )}
           </div>
         </div>
+        <br/>
+        <h2>How to use</h2>
+        <p> 1. Select your drawing that you want to wrap/unwrap </p>
+        <p> 3. Press the <q>Prepare wrapping</q> button. This will call the offerCollectibleForSaleToAddress function in the original Dada Collectible ERC-20 <a href="https://etherscan.io/token/0x068696a3cf3c4676b65f1c9975dd094260109d02">contract</a>. NOTE: You only need to press this button when <b>wrapping</b> and not when unwrapping.</p>
+        <p> 4. Press the <q>Wrap/Unwrap</q> button.</p>
+        <br/>
+        <h2>About</h2>
+        Wrapped Creeps and Weirdos is an unofficial ERC721 wrapping of the Creeps and Weirdos ERC20 contract that was created in 2017. Since the wrapped contract conforms to the NFT standard, it is tradable on NFT marketplaces such as Opensea.
+        <br/>
+        <br/>
+        <a href="https://etherscan.io/address/0xa4afa9cacb4df076a78e87dcbd0cc7b5aeebabeb#contracts">Contract code</a> |&nbsp;
+         <a href="https://opensea.io/collection/wrapped-2017-erc20-creeps">Opensea collection</a>
       </div>
     );
   }
@@ -190,14 +225,14 @@ export class Dapp extends React.Component {
       // `accountsChanged` event can be triggered with an undefined newAddress.
       // This happens when the user removes the Dapp from the "Connected
       // list of sites allowed access to your addresses" (Metamask > Settings > Connections)
-      // To avoid errors, we reset the dapp state 
+      // To avoid errors, we reset the dapp state
       if (newAddress === undefined) {
         return this._resetState();
       }
-      
+
       this._initialize(newAddress);
     });
-    
+
     // We reset the dapp state if the network is changed
     window.ethereum.on("networkChanged", ([networkId]) => {
       this._stopPollingData();
@@ -205,14 +240,13 @@ export class Dapp extends React.Component {
     });
   }
 
-  _initialize(userAddress) {
-    // This method initializes the dapp
 
+  async _initialize(userAddress) {
+    // This method initializes the dapp
     // We first store the user's address in the component's state
     this.setState({
       selectedAddress: userAddress,
     });
-
     // Then, we initialize ethers, fetch the token's data, and start polling
     // for the user's balance.
 
@@ -221,7 +255,132 @@ export class Dapp extends React.Component {
     this._intializeEthers();
     this._getTokenData();
     this._startPollingData();
+    this._loadERC20Tokens(userAddress);
+    this._loadERC721Tokens();
   }
+
+  async _loadERC20Tokens(userAddress) {
+    const tokensQuery = `
+  query {
+    holders (where: {address:"` + userAddress + `"}){
+            ownedPrints {
+                      printIndex
+                    }
+              }
+    }
+`
+console.log(userAddress);
+
+    const client = new ApolloClient({
+      uri: "https://api.studio.thegraph.com/query/9128/dada-mainnet/v0.0.2",
+  cache: new InMemoryCache()
+  });
+
+client.query({
+  query: gql(tokensQuery)
+})
+.then(data => {console.log("Subgraph data: ", data.data.holders[0].ownedPrints);
+let prints = data.data.holders[0].ownedPrints;
+let promises = [];
+
+for (let i = 0; i < prints.length; i++) {
+
+  const idQuery = `
+  query{
+        prints(where: { printIndex:` + prints[i].printIndex + `}){
+                drawing {
+                         drawingId
+                  }
+            }
+        }
+  `
+  promises.push(client.query({
+    query: gql(idQuery)
+  }));
+}
+
+Promise.all(promises)
+  .then((results) => {
+      console.log("All done", results);
+      var listItems = [];
+      var drowDownText = [];
+      for (let z = 0; z < prints.length; z++) {
+        let drawingID = results[z].data.prints[0].drawing.drawingId;
+        listItems[z] = {drawingID:parseInt(drawingID,10), printIndex:parseInt(prints[z].printIndex,10)};
+        drowDownText[z] = {value: z, label: "\"" + drawingnames[drawingID] +"\" | drawingID: " + drawingID + ", print index: " + prints[z].printIndex};
+      }
+      console.log(listItems);
+      this.state.dropDownText = drowDownText;
+      this.state.ownedERC20Drawings = listItems;
+  })
+  .catch((e) => {
+      // handle errors here
+  });
+})
+.catch(err => { console.log("Error fetching data: ", err) });
+
+}
+
+async _loadERC721Tokens() {
+  const token = wrappingContract;
+  const account = this.state.selectedAddress;
+  console.log(typeof(account));
+
+  console.error(await wrappingContract.name(), 'tokens owned by', account);
+
+  const sentLogs = await token.queryFilter(
+    token.filters.Transfer(account, null),
+  );
+  const receivedLogs = await token.queryFilter(
+    token.filters.Transfer(null, account),
+  );
+
+  const logs = sentLogs.concat(receivedLogs)
+    .sort(
+      (a, b) =>
+        a.blockNumber - b.blockNumber ||
+        a.transactionIndex - b.TransactionIndex,
+    );
+
+  const owned = new Set();
+
+  for (const log of logs) {
+    const { from, to, tokenId } = log.args;
+  if (to.toUpperCase() === account.toUpperCase()) {
+    console.log(to);
+      owned.add(tokenId.toString());
+   } else if (from.toUpperCase() === account.toUpperCase()) {
+     owned.delete(tokenId.toString());
+    }
+  }
+
+    console.log(owned);
+  console.log(Array.from(owned));
+
+  let promises = [];
+  let ownedArray = Array.from(owned);
+
+  for (let i = 0; i < ownedArray.length; i++) {
+    promises.push(
+      wrappingContract._tokenIDToDrawingID(ownedArray[i])
+    );
+  }
+
+  Promise.all(promises)
+    .then((results) => {
+         var tmp = [];
+         var dropDownTmp = [];
+          for (let i = 0; i < results.length; i++) {
+              let drawingID = parseInt(results[i],10);
+              let printIndex = parseInt(ownedArray[i],10);
+              tmp[i] = {drawingID: drawingID, printIndex: printIndex};
+              dropDownTmp[i] = {value: i, label: "\"" + drawingnames[drawingID] +"\" | drawingID: " + drawingID + ", print index: " + printIndex};
+          }
+          console.log(tmp);
+          this.state.ownedERC721Drawings = tmp;
+          this.state.dropDownTextERC721 = dropDownTmp;
+    });
+}
 
   async _intializeEthers() {
     // We first initialize ethers by creating a provider using window.ethereum
@@ -230,11 +389,15 @@ export class Dapp extends React.Component {
     // When, we initialize the contract using that provider and the token's
     // artifact. You can do this same thing with your contracts.
     this._token = new ethers.Contract(
-      contractAddress.Token,
-      TokenArtifact.abi,
+      "0x068696A3cf3c4676B65F1c9975dd094260109d02",
+      DadaCollectibleArtifact.abi,
       this._provider.getSigner(0)
     );
+
+    wrappingContract = new ethers.Contract("0xa4afa9cacb4df076a78e87dcbd0cc7b5aeebabeb", WrapperArtifact.abi, this._provider.getSigner(0));
+
   }
+
 
   // The next two methods are needed to start and stop polling data. While
   // the data being polled here is specific to this example, you can use this
@@ -269,10 +432,7 @@ export class Dapp extends React.Component {
     this.setState({ balance });
   }
 
-  // This method sends an ethereum transaction to transfer tokens.
-  // While this action is specific to this application, it illustrates how to
-  // send a transaction.
-  async _transferTokens(to, amount) {
+  async _prepareToWrap(drawingId, printId) {
     // Sending a transaction is a complex operation:
     //   - The user can reject it
     //   - It can fail before reaching the ethereum network (i.e. if the user
@@ -294,7 +454,7 @@ export class Dapp extends React.Component {
 
       // We send the transaction, and save its hash in the Dapp's state. This
       // way we can indicate that we are waiting for it to be mined.
-      const tx = await this._token.transfer(to, amount);
+      const tx = await this._token.offerCollectibleForSaleToAddress(drawingId, printId, 0, "0xa4afa9cacb4df076a78e87dcbd0cc7b5aeebabeb");
       this.setState({ txBeingSent: tx.hash });
 
       // We use .wait() to wait for the transaction to be mined. This method
@@ -311,6 +471,8 @@ export class Dapp extends React.Component {
       // If we got here, the transaction was successful, so you may want to
       // update your state. Here, we update the user's balance.
       await this._updateBalance();
+      this.setState({ wrappingPreprationDone: true });
+
     } catch (error) {
       // We check the error code to see if this error was produced because the
       // user rejected a tx. If that's the case, we do nothing.
@@ -328,6 +490,128 @@ export class Dapp extends React.Component {
       this.setState({ txBeingSent: undefined });
     }
   }
+
+  async _wrap(drawingId, printId) {
+    // Sending a transaction is a complex operation:
+    //   - The user can reject it
+    //   - It can fail before reaching the ethereum network (i.e. if the user
+    //     doesn't have ETH for paying for the tx's gas)
+    //   - It has to be mined, so it isn't immediately confirmed.
+    //     Note that some testing networks, like Hardhat Network, do mine
+    //     transactions immediately, but your dapp should be prepared for
+    //     other networks.
+    //   - It can fail once mined.
+    //
+    // This method handles all of those things, so keep reading to learn how to
+    // do it.
+    console.log("Wrapping");
+
+    try {
+      // If a transaction fails, we save that error in the component's state.
+      // We only save one such error, so before sending a second transaction, we
+      // clear it.
+      this._dismissTransactionError();
+
+      // We send the transaction, and save its hash in the Dapp's state. This
+      // way we can indicate that we are waiting for it to be mined.
+      const tx = await wrappingContract.wrap(drawingId, printId);
+      this.setState({ txBeingSent: tx.hash });
+
+      // We use .wait() to wait for the transaction to be mined. This method
+      // returns the transaction's receipt.
+      const receipt = await tx.wait();
+
+      // The receipt, contains a status flag, which is 0 to indicate an error.
+      if (receipt.status === 0) {
+        // We can't know the exact error that made the transaction fail when it
+        // was mined, so we throw this generic one.
+        throw new Error("Transaction failed");
+      }
+
+      // If we got here, the transaction was successful, so you may want to
+      // update your state. Here, we update the user's balance.
+      await this._updateBalance();
+      this.setState({ wrappingPreprationDone: false });
+
+    } catch (error) {
+      // We check the error code to see if this error was produced because the
+      // user rejected a tx. If that's the case, we do nothing.
+      if (error.code === ERROR_CODE_TX_REJECTED_BY_USER) {
+        return;
+      }
+
+      // Other errors are logged and stored in the Dapp's state. This is used to
+      // show them to the user, and for debugging.
+      console.error(error);
+      this.setState({ transactionError: error });
+    } finally {
+      // If we leave the try/catch, we aren't sending a tx anymore, so we clear
+      // this part of the state.
+      this.setState({ txBeingSent: undefined });
+    }
+  }
+
+  async _unwrap(drawingId, printId) {
+    // Sending a transaction is a complex operation:
+    //   - The user can reject it
+    //   - It can fail before reaching the ethereum network (i.e. if the user
+    //     doesn't have ETH for paying for the tx's gas)
+    //   - It has to be mined, so it isn't immediately confirmed.
+    //     Note that some testing networks, like Hardhat Network, do mine
+    //     transactions immediately, but your dapp should be prepared for
+    //     other networks.
+    //   - It can fail once mined.
+    //
+    // This method handles all of those things, so keep reading to learn how to
+    // do it.
+
+    console.log("Unwrapping");
+
+    try {
+      // If a transaction fails, we save that error in the component's state.
+      // We only save one such error, so before sending a second transaction, we
+      // clear it.
+      this._dismissTransactionError();
+
+      // We send the transaction, and save its hash in the Dapp's state. This
+      // way we can indicate that we are waiting for it to be mined.
+      const tx = await wrappingContract.unwrap(drawingId, printId);
+      this.setState({ txBeingSent: tx.hash });
+
+      // We use .wait() to wait for the transaction to be mined. This method
+      // returns the transaction's receipt.
+      const receipt = await tx.wait();
+
+      // The receipt, contains a status flag, which is 0 to indicate an error.
+      if (receipt.status === 0) {
+        // We can't know the exact error that made the transaction fail when it
+        // was mined, so we throw this generic one.
+        throw new Error("Transaction failed");
+      }
+
+      // If we got here, the transaction was successful, so you may want to
+      // update your state. Here, we update the user's balance.
+      await this._updateBalance();
+      this.setState({ wrappingPreprationDone: false });
+
+    } catch (error) {
+      // We check the error code to see if this error was produced because the
+      // user rejected a tx. If that's the case, we do nothing.
+      if (error.code === ERROR_CODE_TX_REJECTED_BY_USER) {
+        return;
+      }
+
+      // Other errors are logged and stored in the Dapp's state. This is used to
+      // show them to the user, and for debugging.
+      console.error(error);
+      this.setState({ transactionError: error });
+    } finally {
+      // If we leave the try/catch, we aren't sending a tx anymore, so we clear
+      // this part of the state.
+      this.setState({ txBeingSent: undefined });
+    }
+  }
+
 
   // This method just clears part of the state.
   _dismissTransactionError() {
@@ -354,14 +638,14 @@ export class Dapp extends React.Component {
     this.setState(this.initialState);
   }
 
-  // This method checks if Metamask selected network is Localhost:8545 
+  // This method checks if Metamask selected network is Localhost:8545
   _checkNetwork() {
     if (window.ethereum.networkVersion === HARDHAT_NETWORK_ID) {
       return true;
     }
 
-    this.setState({ 
-      networkError: 'Please connect Metamask to Localhost:8545'
+    this.setState({
+      networkError: 'Please connect Metamask to mainnet'
     });
 
     return false;

@@ -31,5 +31,11 @@
     "ethers": "^5.0.0",
     "hardhat": "^2.0.4",
     "husky": "^4.2.5"
+  },
+  "dependencies": {
+    "@nomiclabs/hardhat-etherscan": "^2.1.6",
+    "@openzeppelin/contracts": "^4.3.2",
+    "react-dropdown": "^1.9.2",
+    "reactstrap": "^8.10.0"
   }
 }
